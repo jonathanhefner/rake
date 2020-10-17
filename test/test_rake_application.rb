@@ -248,7 +248,6 @@ class TestRakeApplication < Rake::TestCase # :nodoc:
     end
 
     assert_equal "rakefile", @app.rakefile.downcase
-    assert_equal @tempdir, Dir.pwd
   end
 
   def test_load_rakefile_prints_rakefile_directory_from_subdir
@@ -437,6 +436,18 @@ class TestRakeApplication < Rake::TestCase # :nodoc:
     assert ran
     assert_empty err
     assert_equal "DEFAULT\n", out
+  end
+
+  def test_runs_in_rakefile_directory_from_subdir
+    rakefile_unittest
+    Dir.chdir "subdir"
+
+    pwd = nil
+    @app.define_task(Rake::Task, "default") { pwd = Dir.pwd }
+
+    @app.run %w[]
+
+    assert_equal @tempdir, pwd
   end
 
   def test_display_task_run

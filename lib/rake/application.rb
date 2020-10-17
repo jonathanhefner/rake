@@ -113,7 +113,10 @@ module Rake
         elsif options.show_prereqs
           display_prerequisites
         else
-          top_level_tasks.each { |task_name| invoke_task(task_name) }
+          Dir.chdir(@rakefile_dir || original_dir) do |dir|
+            top_level_tasks.each { |task_name| invoke_task(task_name) }
+            Dir.chdir(dir)
+          end
         end
       end
     end
@@ -269,18 +272,11 @@ module Rake
     end
     private :has_chain?
 
-    # True if one of the files in RAKEFILES is in the current directory.
-    # If a match is found, it is copied into @rakefile.
-    def have_rakefile # :nodoc:
-      @rakefiles.each do |fn|
-        if File.exist?(fn)
-          others = FileList.glob(fn, File::FNM_CASEFOLD)
-          return others.size == 1 ? others.first : fn
-        elsif fn == ""
-          return fn
-        end
+    # Returns first filename from @rakefiles that exists in the specified dir.
+    def have_rakefile(dir = Dir.pwd) # :nodoc:
+      Dir.chdir(dir) do
+        Dir.glob(@rakefiles.map { |name| escape_glob(name) }).first || @rakefiles.find(&:empty?)
       end
-      return nil
     end
 
     # True if we are outputting to TTY, false otherwise
@@ -669,45 +665,36 @@ module Rake
     end
 
     def find_rakefile_location # :nodoc:
-      here = Dir.pwd
-      until (fn = have_rakefile)
-        Dir.chdir("..")
-        return nil if Dir.pwd == here || options.nosearch
-        here = Dir.pwd
+      previous_dir, current_dir = nil, Dir.pwd
+      until (rakefile = have_rakefile(current_dir)) || current_dir == previous_dir
+        break if options.nosearch
+        previous_dir, current_dir = current_dir, File.expand_path("..", current_dir)
       end
-      [fn, here]
-    ensure
-      Dir.chdir(Rake.original_dir)
+      [rakefile, current_dir] if rakefile
     end
 
-    def print_rakefile_directory(location) # :nodoc:
-      $stderr.puts "(in #{Dir.pwd})" unless
-        options.silent or original_dir == location
+    def print_rakefile_directory # :nodoc:
+      $stderr.puts "(in #{@rakefile_dir})" unless
+        options.silent || original_dir == @rakefile_dir
     end
 
     def raw_load_rakefile # :nodoc:
-      rakefile, location = find_rakefile_location
+      @rakefile, @rakefile_dir = find_rakefile_location
+
       if (!options.ignore_system) &&
-          (options.load_system || rakefile.nil?) &&
+          (options.load_system || @rakefile.nil?) &&
           system_dir && File.directory?(system_dir)
-        print_rakefile_directory(location)
-        glob("#{system_dir}/*.rake") do |name|
-          add_import name
-        end
+        print_rakefile_directory
+        add_globbed_imports(system_dir, "*.rake")
       else
-        fail "No Rakefile found (looking for: #{@rakefiles.join(', ')})" if
-          rakefile.nil?
-        @rakefile = rakefile
-        Dir.chdir(location)
-        print_rakefile_directory(location)
-        Rake.load_rakefile(File.expand_path(@rakefile)) if
-          @rakefile && @rakefile != ""
-        options.rakelib.each do |rlib|
-          glob("#{rlib}/*.rake") do |name|
-            add_import name
-          end
+        fail "No Rakefile found (looking for: #{@rakefiles.join(", ")})" if @rakefile.nil?
+        print_rakefile_directory
+        Rake.load_rakefile(File.expand_path(@rakefile, @rakefile_dir)) unless @rakefile.empty?
+        options.rakelib.each do |rakelib|
+          add_globbed_imports(File.expand_path(rakelib, @rakefile_dir), "*.rake")
         end
       end
+
       load_imports
     end
 
@@ -715,6 +702,11 @@ module Rake
       FileList.glob(path.tr("\\", "/")).each(&block)
     end
     private :glob
+
+    def escape_glob(pattern)
+      pattern.tr("\\", "/").gsub(/[*?\[\]{}]/, "\\\\" + '\0')
+    end
+    private :escape_glob
 
     # The directory path containing the system wide rakefiles.
     def system_dir # :nodoc:
@@ -769,6 +761,12 @@ module Rake
     # Add a file to the list of files to be imported.
     def add_import(fn) # :nodoc:
       @pending_imports << fn
+    end
+
+    def add_globbed_imports(directory, pattern) # :nodoc:
+      Dir.glob("#{escape_glob(directory).chomp("/")}/#{pattern}") do |path|
+        add_import path
+      end
     end
 
     # Load the pending list of imported files.
